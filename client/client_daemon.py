@@ -23,6 +23,12 @@ import keyring
 from connection_manager import ConnectionManager
 
 
+# The path for configuration directory, daemon configuration files and sharing folder
+DEFAULT_CONFIG_DIR = os.path.join(os.environ['HOME'], '.PyBox')
+DEFAULT_CONFIG_FILEPATH = os.path.join(DEFAULT_CONFIG_DIR, 'daemon_config')
+DEFAULT_LOCAL_DIR_STATE_FILEPATH = os.path.join(DEFAULT_CONFIG_DIR, 'local_dir_state')
+DEFAULT_SHARING_FOLDER_FILEPATH = os.path.join(os.environ['HOME'], 'sharing_folder')
+
 # Logging configuration
 # =====================
 LOG_FILENAME = 'log/client_daemon.log'
@@ -90,14 +96,11 @@ def is_directory(method):
 
 
 class Daemon(FileSystemEventHandler):
-    # The path for configuration directory and daemon configuration file
-    CONFIG_DIR = os.path.join(os.environ['HOME'], '.PyBox')
-    CONFIG_FILEPATH = os.path.join(CONFIG_DIR, 'daemon_config')
 
     # Default configuration for Daemon, loaded if fail to load the config file from CONFIG_DIR
     DEF_CONF = OrderedDict()
-    DEF_CONF['local_dir_state_path'] = os.path.join(CONFIG_DIR, 'local_dir_state')
-    DEF_CONF['sharing_path'] = os.path.join(os.environ['HOME'], 'sharing_folder')
+    DEF_CONF['local_dir_state_path'] = DEFAULT_LOCAL_DIR_STATE_FILEPATH
+    DEF_CONF['sharing_path'] = DEFAULT_SHARING_FOLDER_FILEPATH
     DEF_CONF['cmd_address'] = 'localhost'
     DEF_CONF['cmd_port'] = 50001
     DEF_CONF['api_suffix'] = '/API/V1/'
@@ -109,9 +112,10 @@ class Daemon(FileSystemEventHandler):
     # Allowed operation before user is activated
     ALLOWED_OPERATION = {'register', 'activate', 'login'}
 
-    def __init__(self, cfg_path=None, sharing_path=None):
+    def __init__(self, cfg_path, sharing_path):
+
         FileSystemEventHandler.__init__(self)
-        # Just Initialize variable the Daemon.start() do the other things
+        # Initialize variable the Daemon.start() will use
         self.daemon_state = 'down'  # TODO implement the daemon state (disconnected, connected, syncronizing, ready...)
         self.running = 0
         self.client_snapshot = {}  # EXAMPLE {'<filepath1>: ['<timestamp>', '<md5>', '<filepath2>: ...}
@@ -119,9 +123,11 @@ class Daemon(FileSystemEventHandler):
         self.local_dir_state = {}  # EXAMPLE {'last_timestamp': '<timestamp>', 'global_md5': '<md5>'}
         self.listener_socket = None
         self.observer = None
-        self.cfg = self._load_cfg(cfg_path, sharing_path)
+        # Init configuration for daemon
+        self.build_directory(sharing_path)
+        self.cfg_filepath = cfg_path
+        self.cfg = self.load_configuration(cfg_path, sharing_path)
         self.password = self._load_pass()
-        self._init_sharing_path(sharing_path)
 
         self.conn_mng = ConnectionManager(self.cfg)
 
@@ -131,82 +137,75 @@ class Daemon(FileSystemEventHandler):
             'removeshareduser': self._remove_shared_user,
         }
 
-    def _build_directory(self, path):
+    @staticmethod
+    def build_directory(dir_path):
         """
-        Create a given directory if not existent
-        :param path: the path of dir i want to create
-        :return: boolean that indicate if the directory is now created or not.
+        Check that the given folder exists otherwise create it.
         """
-        if not os.path.isdir(path):
+        if not os.path.isdir(dir_path):
             try:
-                os.makedirs(path)
-            except OSError:
-                logger.warning('\nWARNING!Impossible to create directory at the following path:\n{}\n'.format(path))
-                return False
-            else:
-                logger.info('Created folder: {}'.format(path))
-        return True
+                os.makedirs(dir_path)
+                logger.info('Folder created in path:\n{}'.format(dir_path))
+            except Exception:
+                logger.error('Impossible to create folder in path:\n{}'
+                             .format(dir_path))
+                raise
 
-    def _create_cfg(self, cfg_path, sharing_path):
+    def load_configuration(self, cfg_path, sharing_path):
         """
-        Create the configuration file of client_daemon.
-        If is given custom path for cfg (cfg_path) or observed directory (sharing_path) the config file
-        will be updated with that configuration.
-        If no cfg_path is given as default we save in default path stored in Daemon.CONFIG_FILEPATH.
-        If no sharing_path is given as default we save in default path stored in Daemon.DEF_CONF['sharing_path'].
+        Loads config, in case of customized config file try to read it,
+        if config file is corrupted restore it and load default configuration.
+
+        :param cfg_path: Path of config
+        :return: dictionary containing configuration
+        """
+        loaded_config = OrderedDict()
+        try:
+            with open(cfg_path, 'r') as fo:
+                # To maintain the order i will extract one by one record
+                for k, v in json.load(fo).iteritems():
+                    loaded_config[k] = v
+        except (ValueError, OSError, IOError):
+            logger.warning('\nImpossible to load configuration from filepath:\n{0}\n'
+                           'Config file overwrited and loaded with default configuration!'.format(cfg_path))
+            return self.create_cfg(cfg_path, sharing_path)
+
+        # Check that all the key in DEF_CONF are in loaded_config
+        for k in Daemon.DEF_CONF:
+            if k not in loaded_config:
+                logger.warning('Warning "{0}" corrupted!\n'
+                                'Config file overwrited and loaded with default configuration!'
+                               .format(cfg_path))
+                return self.create_cfg(cfg_path, sharing_path)
+
+        # Config is valid
+        return loaded_config
+
+    def create_cfg(self, cfg_path, sharing_path):
+        """
+        Creates the cfg file for client_daemon with the given cfg filepath and sharing folder path
+        and returns the result config.
+
         :param cfg_path: Path of config
         :param sharing_path: Indicate the path of observed directory
         """
 
-        building_cfg = Daemon.DEF_CONF
-        building_cfg['sharing_path'] = sharing_path
-        if cfg_path != Daemon.CONFIG_FILEPATH:
-            Daemon.CONFIG_FILEPATH = cfg_path
-            Daemon.CONFIG_DIR = os.path.dirname(cfg_path)
-            building_cfg['local_dir_state_path'] = os.path.join(Daemon.CONFIG_DIR, 'local_dir_state')
-        if self._build_directory(Daemon.CONFIG_DIR):
-            with open(Daemon.CONFIG_FILEPATH, 'w') as daemon_config:
-                json.dump(building_cfg, daemon_config, skipkeys=True, ensure_ascii=True, indent=4)
-            return building_cfg
-        else:
-            self.stop(1, 'Impossible to create cfg file into {}'.format(Daemon.CONFIG_DIR))
+        cfg_dir = os.path.dirname(cfg_path)
+        self.build_directory(cfg_dir)
+        new_cfg = self.DEF_CONF
+        new_cfg['sharing_path'] = sharing_path
+        new_cfg['local_dir_state_path'] = os.path.join(cfg_dir, 'local_dir_state')
+
+        with open(cfg_path, 'w') as daemon_config:
+            json.dump(new_cfg, daemon_config, skipkeys=True, ensure_ascii=True, indent=4)
+        return new_cfg
 
     def update_cfg(self):
         """
         Update cfg with new state in self.cfg
         """
-        with open(Daemon.CONFIG_FILEPATH, 'w') as daemon_config:
+        with open(self.cfg_filepath, 'w') as daemon_config:
             json.dump(self.cfg, daemon_config, skipkeys=True, ensure_ascii=True, indent=4)
-
-    def _load_cfg(self, cfg_path, sharing_path):
-        """
-        Load config, if impossible to find it or config file is corrupted restore it and load default configuration
-        :param cfg_path: Path of config
-        :param sharing_path: Indicate the path of observed directory
-        :return: dictionary containing configuration
-        """
-        if os.path.isfile(cfg_path):
-            try:
-                with open(cfg_path, 'r') as fo:
-                    loaded_config = OrderedDict()
-                    for k, v in json.load(fo).iteritems():
-                        loaded_config[k] = v
-            except ValueError:
-                logger.warning('\nImpossible to read "{0}"!\n'
-                               'Config file overwrited and loaded with default configuration!\n'.format(cfg_path))
-            else:
-                # Check that all the key in DEF_CONF are in loaded_config
-                if not [True for k in Daemon.DEF_CONF if k not in loaded_config]:
-                    # In the case is all gone right we can update the CONFIG costant and return loaded_config
-                    Daemon.CONFIG_FILEPATH = cfg_path
-                    Daemon.CONFIG_DIR = os.path.dirname(cfg_path)
-                    return loaded_config
-                logger.warning('\nWarning "{0}" corrupted!\n'
-                               'Config file overwrited and loaded with default configuration!\n'.format(cfg_path))
-        else:
-            logger.warning('\nWarning "{0}" doesn\'t exist!\n'
-                           'New config file created and loaded with default configuration!\n'.format(cfg_path))
-        return self._create_cfg(cfg_path, sharing_path)
 
     def _save_pass(self, password):
         """
@@ -220,21 +219,6 @@ class Daemon(FileSystemEventHandler):
         :return: the account password
         """
         return keyring.get_password('PyBox', self.cfg.get('user', ''))
-
-    def _init_sharing_path(self, sharing_path):
-        """
-        Check that the sharing folder exists otherwise create it.
-        If is not given custom sharing_path we use default stored into self.cfg['sharing_path']
-        If is impossible to create the directory exit error message is given.
-        """
-
-        if self._build_directory(sharing_path):
-            self.cfg['sharing_path'] = sharing_path
-            self.update_cfg()
-        else:
-            self.stop(1, '\nImpossible to create sharing folder in path:\n{}\n'
-                         'Check sharing_path value contained in cfg file:\n{}\n'
-                      .format(self.cfg['sharing_path'], Daemon.CONFIG_FILEPATH))
 
     def build_client_snapshot(self):
         """
@@ -1213,34 +1197,14 @@ def create_log_file_handler():
     return file_handler
 
 
-def is_valid_file(parser, string):
-    if os.path.isfile(string) or string == DEF_CFG_FILEPATH:
-        return string
-    else:
-        parser.error('The path "%s" does not be a valid file!' % string)
-
-
-def is_valid_dir(parser, string):
-    if os.path.isdir(string) or string == DEF_SHARING_PATH:
-        return string
-    else:
-        parser.error('The path "%s" does not be a valid directory!' % string)
-
-DEF_SHARING_PATH = Daemon.DEF_CONF['sharing_path']
-DEF_CFG_FILEPATH = Daemon.CONFIG_FILEPATH
-
-
 def main():
     file_handler = create_log_file_handler()
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-cfg', help='the configuration file filepath',
-                        type=lambda string: is_valid_file(parser, string),
-                        default=DEF_CFG_FILEPATH)
+                        default=DEFAULT_CONFIG_FILEPATH)
     parser.add_argument('-sh', help='the sharing path that we will observing',
-                        type=lambda string: is_valid_dir(parser, string),
-                        default=DEF_SHARING_PATH,
-                        dest='custom_sharing_path')
+                        default=DEFAULT_SHARING_FOLDER_FILEPATH, dest='custom_sharing_path')
     parser.add_argument('--debug', default=False, action='store_true',
                         help='set console verbosity level to DEBUG (4) '
                              '[default: %(default)s]')
