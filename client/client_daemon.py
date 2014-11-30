@@ -252,7 +252,7 @@ class Daemon(FileSystemEventHandler):
             except KeyError:
                 self.shared_snapshot = {}
         else:
-            self.stop(1, '\nReceived None snapshot. Server down?\n')
+            self.stop(1, 'Received None snapshot. Server down?')
 
         # check the consistency of client snapshot retrieved by the server with the real files on clients
         file_md5 = None
@@ -316,7 +316,7 @@ class Daemon(FileSystemEventHandler):
             return False
         self.client_snapshot[dst] = self.client_snapshot[src]
         logging.info('Copied file on client during SYNC.\n'
-                     'Source filepath: {}\nDestination filepath: {}\n'.format(abs_src, abs_dst))
+                     'Source filepath: {}\nDestination filepath: {}'.format(abs_src, abs_dst))
         return True
 
     def _make_move_on_client(self, src, dst):
@@ -345,7 +345,7 @@ class Daemon(FileSystemEventHandler):
         self.client_snapshot[dst] = self.client_snapshot[src]
         self.client_snapshot.pop(src)
         logger.info('Moved file on client during SYNC.\n'
-                    'Source filepath: {}\nDestination filepath: {}\n'.format(abs_src, abs_dst))
+                    'Source filepath: {}\nDestination filepath: {}'.format(abs_src, abs_dst))
         return True
 
     def _make_delete_on_client(self, filepath):
