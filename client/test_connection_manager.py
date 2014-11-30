@@ -30,13 +30,10 @@ import urllib
 TEST_DIR = os.path.join(os.environ['HOME'], 'daemon_test')
 CONFIG_DIR = os.path.join(TEST_DIR, '.PyBox')
 CONFIG_FILEPATH = os.path.join(CONFIG_DIR, 'daemon_config')
-LOCAL_DIR_STATE_FOR_TEST = os.path.join(CONFIG_DIR, 'local_dir_state')
 TEST_SHARING_FOLDER = os.path.join(TEST_DIR, 'test_sharing_folder')
 TEST_SERVER_ADDRESS = 'http://www.pyboxtest.com'
 
 TEST_CFG = {
-    'local_dir_state_path': LOCAL_DIR_STATE_FOR_TEST,
-    'sharing_path': TEST_SHARING_FOLDER,
     'cmd_address': 'localhost',
     'cmd_port': 60001,
     'api_suffix': '/API/V1/',
@@ -89,7 +86,7 @@ class TestConnectionManager(unittest.TestCase):
         self.shares_url = ''.join([self.base_url, 'shares/'])
         self.user_url = ''.join([self.base_url, 'users/'])
 
-        self.cm = ConnectionManager(self.cfg)
+        self.cm = ConnectionManager(self.cfg, TEST_SHARING_FOLDER)
 
     def tearDown(self):
         httpretty.disable()

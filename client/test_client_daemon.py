@@ -13,6 +13,8 @@ import tstutils
 
 from contextlib import contextmanager
 
+import utils
+
 #########################################################################################
 # WARNING: If u need to see the log message in tests uncomment the following lines
 
@@ -57,8 +59,6 @@ base_dir_tree = {}
 shared_files_dir_tree = {}
 
 TEST_CFG = {
-    'local_dir_state_path': LOCAL_DIR_STATE_FOR_TEST,
-    'sharing_path': TEST_SHARING_FOLDER,
     'cmd_address': 'localhost',
     'cmd_port': 60001,
     'api_suffix': '/API/V1/',
@@ -188,142 +188,67 @@ class TestClientDaemonConfig(unittest.TestCase):
         create_environment()
         create_base_dir_tree()
         create_shared_files_dir_tree()
-        self.daemon = client_daemon.Daemon(CONFIG_FILEPATH, TEST_SHARING_FOLDER)
+        self.daemon = client_daemon.Daemon(CONFIG_DIR, TEST_SHARING_FOLDER)
 
     def tearDown(self):
         destroy_test_folder()
 
-    def test__build_directory(self):
+    def test_build_directory(self):
         """
         Create directory
         :return: boolean value, True is created or already existent
         """
-        if os.path.exists('cartella_di_prova'):
-            shutil.rmtree('cartella_di_prova')
-        self.assertTrue(self.daemon._build_directory('cartella_di_prova'))
-        self.assertTrue(self.daemon._build_directory('cartella_di_prova'))
-        shutil.rmtree('cartella_di_prova')
+        test_dir_path = 'test_dir_name'
+        if os.path.exists(test_dir_path):
+            shutil.rmtree(test_dir_path)
 
-    def test__build_directory_in_forbidden_path(self):
+        self.assertFalse(os.path.exists(test_dir_path))
+        utils.build_directory(test_dir_path)
+        self.assertTrue(os.path.exists(test_dir_path))
+        utils.build_directory(test_dir_path)
+        self.assertTrue(os.path.exists(test_dir_path))
+        shutil.rmtree(test_dir_path)
+
+    def test_build_directory_in_forbidden_path(self):
         """
         Create directory in forbidden path
         :return:boolean value, False if the path is not allowed
         """
-        self.assertFalse(self.daemon._build_directory('/cartella_di_prova'))
+        self.assertRaises(OSError, utils.build_directory, '/forbiden_path')
 
     def test_update_cfg(self):
         """
         Test updating cfg with this_is_test_value
         """
-        self.daemon.cfg['this_is_test_value'] = True
+        self.assertTrue(self.daemon.cfg['activate'])
+        with open(CONFIG_FILEPATH, 'r') as cfg:
+            self.assertTrue(json.load(cfg)['activate'])
+        self.daemon.cfg['activate'] = False
         self.daemon.update_cfg()
-        with open(self.daemon.CONFIG_FILEPATH, 'r') as cfg:
-            self.assertTrue(json.load(cfg)['this_is_test_value'])
+        with open(CONFIG_FILEPATH, 'r') as cfg:
+            self.assertFalse(json.load(cfg)['activate'])
 
-    def test__create_cfg_with_default_configuration(self):
+    def test_create_cfg(self):
         """
         Test cfg creation with default configuration.
         """
-        # Set manually the configuration
-        os.remove(CONFIG_FILEPATH)
-        client_daemon.Daemon.CONFIG_DIR = CONFIG_DIR
-        client_daemon.Daemon.CONFIG_FILEPATH = CONFIG_FILEPATH
-        client_daemon.Daemon.DEF_CONF['local_dir_state_path'] = LOCAL_DIR_STATE_FOR_TEST
-        client_daemon.Daemon.DEF_CONF['sharing_path'] = TEST_SHARING_FOLDER
+        shutil.rmtree(CONFIG_DIR)
 
-        # Load configuration from default
-        self.daemon.cfg = self.daemon._create_cfg(CONFIG_FILEPATH, TEST_SHARING_FOLDER)
+        self.assertEqual(CONFIG_FILEPATH, self.daemon.cfg_filepath)
 
-        self.assertEqual(self.daemon.CONFIG_FILEPATH, CONFIG_FILEPATH)
-        self.assertEqual(self.daemon.CONFIG_DIR, CONFIG_DIR)
-        self.assertEqual(self.daemon.cfg['local_dir_state_path'], LOCAL_DIR_STATE_FOR_TEST)
-        self.assertEqual(self.daemon.cfg['sharing_path'], TEST_SHARING_FOLDER)
+        self.daemon.create_cfg()
 
-    def test__create_cfg_with_custom_sharing_path(self):
-        """
-        Test cfg creation with custom sharing folder.
-        """
-        # Set manually the configuration
-        os.remove(CONFIG_FILEPATH)
-        client_daemon.Daemon.CONFIG_DIR = CONFIG_DIR
-        client_daemon.Daemon.CONFIG_FILEPATH = CONFIG_FILEPATH
-        client_daemon.Daemon.DEF_CONF['local_dir_state_path'] = LOCAL_DIR_STATE_FOR_TEST
-        new_sharing_path = os.path.join(CONFIG_DIR, 'new_sharing_path')
+        with open(CONFIG_FILEPATH, 'r') as cfg_file:
+            cfg_from_file = json.load(cfg_file)
+            for key in self.daemon.DEF_CONF:
+                self.assertEqual(self.daemon.DEF_CONF[key], cfg_from_file[key])
+            self.assertEqual(len(cfg_from_file), len(self.daemon.DEF_CONF))
 
-        # Load custom configuration
-        self.daemon.cfg = self.daemon._create_cfg(CONFIG_FILEPATH, new_sharing_path)
-
-        self.assertEqual(self.daemon.cfg['sharing_path'], new_sharing_path)
-
-    def test__create_cfg(self):
-        """
-        Test create cfg file with test options.
-        The cfg is already created during setup, i will test the result is right.
-        """
-        self.assertEqual(self.daemon.CONFIG_DIR, CONFIG_DIR)
-        self.assertEqual(self.daemon.CONFIG_FILEPATH, CONFIG_FILEPATH)
-        self.assertEqual(self.daemon.cfg['local_dir_state_path'], LOCAL_DIR_STATE_FOR_TEST)
-        self.assertEqual(self.daemon.cfg['sharing_path'], TEST_SHARING_FOLDER)
-
-    def test__create_cfg_in_forbidden_path(self):
-        """
-        Test creation of cfg and cfg directory in forbidden path.
-        """
-        forbidden_path = '/forbidden_path/cfg_file'
-        self.assertRaises(SystemExit, self.daemon._create_cfg, cfg_path=forbidden_path,
-                          sharing_path=TEST_SHARING_FOLDER)
-
-    def test__init_sharing_path_with_default_configuration(self):
-        """
-        Test initialization of sharing folder with default configuration.
-        """
-        # Set manually the configuration
-        shutil.rmtree(TEST_SHARING_FOLDER)
-        client_daemon.Daemon.DEF_CONF['sharing_path'] = TEST_SHARING_FOLDER
-
-        # Initialize configuration from default
-        self.daemon._init_sharing_path(sharing_path=TEST_SHARING_FOLDER)
-
-        with open(CONFIG_FILEPATH, 'r') as cfg:
-            saved_sharing_path = json.load(cfg)['sharing_path']
-        self.assertEqual(self.daemon.cfg['sharing_path'], saved_sharing_path, TEST_SHARING_FOLDER)
-
-    def test__init_sharing_path_with_customization_folder(self):
-        """
-        Test Initialization of sharing folder done with customization.
-        I can test this with customization happens by create_environment() during setUp.
-        """
-        #Create new sharing_path
-        new_sharing_path = os.path.join(TEST_SHARING_FOLDER, 'test_sharing')
-
-        # Initialize configuration with custom sharing_path
-        self.daemon._init_sharing_path(sharing_path=new_sharing_path)
-
-        with open(CONFIG_FILEPATH, 'r') as cfg:
-            saved_sharing_path = json.load(cfg)['sharing_path']
-        self.assertEqual(self.daemon.cfg['sharing_path'], saved_sharing_path, TEST_SHARING_FOLDER)
-
-    def test__init_sharing_path_with_forbidden_path(self):
-        """
-        Test Initialization of sharing folder done with forbidden_path.
-        """
-        forbidden_path = '/forbidden_path/sharing_folder'
-        self.assertRaises(SystemExit, self.daemon._init_sharing_path, forbidden_path)
-
-    def test_load_cfg_with_existent_cfg(self):
+    def test_load_configuration_with_existent_cfg(self):
         """
         This test can be done with created test environment.
         """
         self.assertEqual(self.daemon.cfg, TEST_CFG)
-
-    def test_load_cfg_with_customization_cfg(self):
-        """
-        Test loading of cfg file done with customization cfg.
-        """
-        old_cfg = self.daemon.cfg
-        os.remove(CONFIG_FILEPATH)
-        self.daemon._load_cfg(cfg_path=CONFIG_FILEPATH, sharing_path=None)
-        self.assertEqual(self.daemon.cfg, old_cfg)
 
     def test_load_cfg_from_broken_file(self):
         """
@@ -338,7 +263,7 @@ class TestClientDaemonConfig(unittest.TestCase):
 
         self.assertNotEqual(self.daemon.cfg, client_daemon.Daemon.DEF_CONF)
         # Loading of broken_cfg
-        self.daemon.cfg = self.daemon._load_cfg(cfg_path=CONFIG_FILEPATH, sharing_path=None)
+        self.daemon.cfg = self.daemon.load_configuration()
 
         # Check what is written to the file after load, i expect that broken file is overwrited with default config
         with open(CONFIG_FILEPATH, 'r') as created_file:
@@ -358,8 +283,9 @@ class TestClientDaemonConfig(unittest.TestCase):
             json.dump(missing_key_cfg, cfg)
 
         self.assertNotEqual(self.daemon.cfg, client_daemon.Daemon.DEF_CONF)
+
         # Loading of cfg with missing key
-        self.daemon.cfg = self.daemon._load_cfg(cfg_path=CONFIG_FILEPATH, sharing_path=None)
+        self.daemon.cfg = self.daemon.load_configuration()
 
         # Check what is written to the file after load, i expect that cfg is overwritten with default configuration
         with open(CONFIG_FILEPATH, 'r') as created_file:
@@ -368,7 +294,6 @@ class TestClientDaemonConfig(unittest.TestCase):
             self.assertEqual(self.daemon.cfg[cfg_line], loaded_config[cfg_line],
                              client_daemon.Daemon.DEF_CONF[cfg_line])
         # Check configuration inside missing_key_cfg is not written with default_cfg
-        self.assertNotEqual(missing_key_cfg['local_dir_state_path'], self.daemon.cfg['local_dir_state_path'])
         self.assertNotIn('missing_key', self.daemon.cfg)
 
     def test_load_cfg_with_unexistent_path(self):
@@ -379,8 +304,9 @@ class TestClientDaemonConfig(unittest.TestCase):
         os.remove(CONFIG_FILEPATH)
 
         self.assertNotEqual(self.daemon.cfg, client_daemon.Daemon.DEF_CONF)
+
         # Loading unexistent cfg
-        self.daemon.cfg = self.daemon._load_cfg(cfg_path=CONFIG_FILEPATH, sharing_path=None)
+        self.daemon.cfg = self.daemon.load_configuration()
 
         # Check what is written to the file after load, i expect that cfg is overwritten with default configuration
         with open(CONFIG_FILEPATH, 'r') as created_file:
@@ -394,7 +320,7 @@ class TestClientDaemonDirState(unittest.TestCase):
     def setUp(self):
         create_environment()
         create_base_dir_tree()
-        self.daemon = client_daemon.Daemon(CONFIG_FILEPATH, TEST_SHARING_FOLDER)
+        self.daemon = client_daemon.Daemon(CONFIG_DIR, TEST_SHARING_FOLDER)
 
     def tearDown(self):
         destroy_test_folder()
@@ -459,7 +385,7 @@ class TestClientDaemonActions(unittest.TestCase):
     def setUp(self):
         create_environment()
         create_base_dir_tree()
-        self.daemon = client_daemon.Daemon(CONFIG_FILEPATH, TEST_SHARING_FOLDER)
+        self.daemon = client_daemon.Daemon(CONFIG_DIR, TEST_SHARING_FOLDER)
         self.daemon.operation_happened = 'initial'
         self.daemon.create_observer()
         self.daemon.observer.start()
@@ -533,7 +459,6 @@ class TestClientDaemonActions(unittest.TestCase):
         self.assertTrue(self.daemon._make_move_on_client(file_to_move_exists, dst_file_that_not_exists))
         self.assertIn(dst_file_that_not_exists, self.daemon.client_snapshot)
 
-
     def test_make_move_function_not_src(self):
         """
         Test _MAKE_MOVE: test the MOVE function when the SRC NOT EXISTS
@@ -581,7 +506,7 @@ class TestClientDaemonSync(unittest.TestCase):
         create_environment()
         create_base_dir_tree()
         create_shared_files_dir_tree()
-        self.daemon = client_daemon.Daemon(CONFIG_FILEPATH, TEST_SHARING_FOLDER)
+        self.daemon = client_daemon.Daemon(CONFIG_DIR, TEST_SHARING_FOLDER)
         self.daemon.operation_happened = 'initial'
         self.daemon.create_observer()
         self.daemon.observer.start()
@@ -762,13 +687,19 @@ class TestClientDaemonSync(unittest.TestCase):
         event = FileFakeEvent(new_file_path)
         self.daemon.conn_mng = FakeConnMng()
         self.daemon.search_md5 = fake_search_md5
-        self.daemon.hash_file = fake_hash_file
+
+        # Mock hash_file
+        bkp_hash_file = utils.hash_file
+        utils.hash_file = fake_hash_file
 
         # test
         self.daemon.on_created(event)
 
         self.assertEqual(self.daemon.shared_snapshot, shared_files_dir_tree)
         self.assertEqual(self.daemon.client_snapshot, base_dir_tree)
+
+        # Restore utils.hash_file
+        utils.hash_file = bkp_hash_file
 
     def test__read_only_shared_folder_move_file_from_shared_to_not_shared(self):
         """
@@ -795,7 +726,10 @@ class TestClientDaemonSync(unittest.TestCase):
         dest_file_path = os.path.join(TEST_SHARING_FOLDER, 'new_file.txt')
         event = FileFakeEvent(source_file_path, dest_path=dest_file_path)
         self.daemon.conn_mng = FakeConnMng()
-        self.daemon.hash_file = fake_hash_file
+
+        # Mock hash_file
+        bkp_hash_file = utils.hash_file
+        utils.hash_file = fake_hash_file
 
         # test
         expected_shared_snapshop = self.daemon.shared_snapshot.copy()
@@ -806,13 +740,16 @@ class TestClientDaemonSync(unittest.TestCase):
         self.assertEqual(self.daemon.shared_snapshot, expected_shared_snapshop)
         self.assertIn('new_file.txt', self.daemon.client_snapshot)
 
+        # Restore utils.hash_file
+        utils.hash_file = bkp_hash_file
     def test__read_only_shared_folder_move_file_from_shared_to_shared(self):
         """
         Test SYNC: Test the case when the user moves a file from a shared path to a shared path (read-only)
 
         """
-
         # setup the mock
+        bkp_hash_file = utils.hash_file
+        utils.hash_file = fake_hash_file
 
         server_timestamp = timestamp_generator()
 
@@ -831,7 +768,6 @@ class TestClientDaemonSync(unittest.TestCase):
         dest_file_path = os.path.join(TEST_SHARING_FOLDER, 'shared/test/new_file.txt')
         event = FileFakeEvent(source_file_path, dest_path=dest_file_path)
         self.daemon.conn_mng = FakeConnMng()
-        self.daemon.hash_file = fake_hash_file
 
         # test the case the dest_file_path it' a new path
         self.daemon.on_moved(event)
@@ -860,6 +796,9 @@ class TestClientDaemonSync(unittest.TestCase):
         self.assertEqual(self.daemon.shared_snapshot, expected_shared_snapshop)
         self.assertEqual(self.daemon.client_snapshot, base_dir_tree)
 
+        # Restore utils.hash_file
+        utils.hash_file = bkp_hash_file
+
     def test__read_only_shared_folder_move_file_from_not_shared_to_shared(self):
         """
         Test SYNC: Test the case when the user moves a file from a not shared path to a shared path (read-only)
@@ -867,6 +806,8 @@ class TestClientDaemonSync(unittest.TestCase):
         """
 
         # setup the mock
+        bkp_hash_file = utils.hash_file
+        utils.hash_file = fake_hash_file
 
         server_timestamp = timestamp_generator()
 
@@ -885,7 +826,7 @@ class TestClientDaemonSync(unittest.TestCase):
         dest_file_path = os.path.join(TEST_SHARING_FOLDER, 'shared/test/new_file.txt')
         event = FileFakeEvent(source_file_path, dest_path=dest_file_path)
         self.daemon.conn_mng = FakeConnMng()
-        self.daemon.hash_file = fake_hash_file
+
 
         # test the case the dest_file_path it' a new path
         self.daemon.on_moved(event)
@@ -902,7 +843,7 @@ class TestClientDaemonSync(unittest.TestCase):
         dest_file_path = os.path.join(TEST_SHARING_FOLDER, 'shared/millino/folder/filefile.dat')
         event = FileFakeEvent(source_file_path, dest_path=dest_file_path)
         self.daemon.conn_mng = FakeConnMng()
-        self.daemon.hash_file = fake_hash_file
+
 
         # test the case the dest_file_path already exist so it means that old file is modified
         self.daemon.on_moved(event)
@@ -915,6 +856,8 @@ class TestClientDaemonSync(unittest.TestCase):
         self.assertEqual(self.daemon.shared_snapshot, expected_shared_snapshop)
         self.assertEqual(self.daemon.client_snapshot, expected_client_snapshop)
 
+        # Restore utils.hash_file
+        utils.hash_file = bkp_hash_file
     def test__read_only_shared_folder_file_modified(self):
         """
         Test SYNC: Test the case when the user modify a file in shared folder
@@ -922,6 +865,8 @@ class TestClientDaemonSync(unittest.TestCase):
         """
 
         # setup the mock
+        bkp_hash_file = utils.hash_file
+        utils.hash_file = fake_hash_file
 
         server_timestamp = timestamp_generator()
 
@@ -940,7 +885,6 @@ class TestClientDaemonSync(unittest.TestCase):
         event = FileFakeEvent(source_file_path)
 
         self.daemon.conn_mng = FakeConnMng()
-        self.daemon.hash_file = fake_hash_file
 
         # test
         self.daemon.on_modified(event)
@@ -951,6 +895,9 @@ class TestClientDaemonSync(unittest.TestCase):
         self.assertEqual(self.daemon.client_snapshot, base_dir_tree)
         self.assertEqual(self.daemon.shared_snapshot, expected_shared_snapshop)
 
+        # Restore utils.hash_file
+        utils.hash_file = bkp_hash_file
+
     def test__read_only_shared_folder_file_deleted(self):
         """
         Test SYNC: Test the case when the user removes a file from shared folder
@@ -958,6 +905,8 @@ class TestClientDaemonSync(unittest.TestCase):
         """
 
         # setup the mock
+        bkp_hash_file = utils.hash_file
+        utils.hash_file = fake_hash_file
 
         server_timestamp = timestamp_generator()
 
@@ -975,7 +924,6 @@ class TestClientDaemonSync(unittest.TestCase):
         event = FileFakeEvent(source_file_path)
 
         self.daemon.conn_mng = FakeConnMng()
-        self.daemon.hash_file = fake_hash_file
 
         # test
         self.daemon.on_deleted(event)
@@ -986,6 +934,9 @@ class TestClientDaemonSync(unittest.TestCase):
 
         self.assertEqual(self.daemon.client_snapshot, base_dir_tree)
         self.assertEqual(self.daemon.shared_snapshot, expected_shared_snapshop)
+
+        # Restore utils.hash_file
+        utils.hash_file = bkp_hash_file
 
     def test_sync_process_delete(self):
         """
@@ -1391,7 +1342,7 @@ def replace_conn_mng(daemon, fake):
 
 class TestDaemonCmdManagerConnection(unittest.TestCase):
     def setUp(self):
-        self.daemon = client_daemon.Daemon(CONFIG_FILEPATH, TEST_SHARING_FOLDER)
+        self.daemon = client_daemon.Daemon(CONFIG_DIR, TEST_SHARING_FOLDER)
         self.daemon.create_observer()
         self.daemon.observer.start()
         self.daemon.cfg['user'] = ''
@@ -1419,18 +1370,18 @@ class TestDaemonCmdManagerConnection(unittest.TestCase):
         json_data = json.dumps(command)
         self.socket.set_response(json_data)
 
-        self.assertEquals(self.daemon._get_cmdmanager_request(self.socket), json.loads(json_data))
+        self.assertEquals(utils.get_cmdmanager_request(self.socket), json.loads(json_data))
 
     def test_set_cmdmanager_response(self):
         response = 'testtestetst'
-        self.assertEqual(self.daemon._set_cmdmanager_response(self.socket, response), json.dumps({'message': response}))
+        self.assertEqual(utils.set_cmdmanager_response(self.socket, response), json.dumps({'message': response}))
 
     def test__activation_check_block_not_allowed_operation(self):
         """
         Test that _activation_check block not allowed operation
         """
         #Mocking the communication with cmdmanager
-        self.daemon._set_cmdmanager_response = fake_set_cmdmanager_response
+        utils.set_cmdmanager_response = fake_set_cmdmanager_response
 
         command = 'not_allowed'
         data = {}
@@ -1439,7 +1390,7 @@ class TestDaemonCmdManagerConnection(unittest.TestCase):
         old_activate_state = self.daemon.cfg['activate']
 
         # Call _activation_check with not allowed operation
-        self.daemon._activation_check(self.socket, command, data)
+        self.daemon._activation_check(command, data)
 
         self.assertEqual(old_user, self.daemon.cfg['user'])
         self.assertEqual(old_pass, self.daemon.password)
@@ -1456,7 +1407,7 @@ class TestDaemonCmdManagerConnection(unittest.TestCase):
             return {'successful': True}
 
         #Mocking the communication with cmdmanager
-        self.daemon._set_cmdmanager_response = fake_set_cmdmanager_response
+        utils.set_cmdmanager_response = fake_set_cmdmanager_response
 
         command = 'register'
         self.daemon.conn_mng.do_register = fake_register_into_connection_manager
@@ -1465,7 +1416,7 @@ class TestDaemonCmdManagerConnection(unittest.TestCase):
         old_activate_state = self.daemon.cfg['activate']
 
         # Call _activation_check with successful response from server
-        self.daemon._activation_check(self.socket, command, data)
+        self.daemon._activation_check(command, data)
 
         self.assertEqual(self.daemon.cfg['user'], USR)
         self.assertEqual(self.daemon.password, PW)
@@ -1482,7 +1433,7 @@ class TestDaemonCmdManagerConnection(unittest.TestCase):
             return {'successful': False}
 
         #Mocking the communication with cmdmanager
-        self.daemon._set_cmdmanager_response = fake_set_cmdmanager_response
+        utils.set_cmdmanager_response = fake_set_cmdmanager_response
 
         command = 'register'
         self.daemon.conn_mng.do_register = fake_register_into_connection_manager
@@ -1493,7 +1444,7 @@ class TestDaemonCmdManagerConnection(unittest.TestCase):
         old_activate_state = self.daemon.cfg['activate']
 
         # Call _activation_check with failed response from server
-        self.daemon._activation_check(self.socket, command, data)
+        self.daemon._activation_check(command, data)
 
         self.assertEqual(self.daemon.cfg['user'], old_user)
         self.assertEqual(self.daemon.password, old_pass)
@@ -1510,7 +1461,7 @@ class TestDaemonCmdManagerConnection(unittest.TestCase):
             return {'successful': True}
 
         #Mocking the communication with cmdmanager
-        self.daemon._set_cmdmanager_response = fake_set_cmdmanager_response
+        utils.set_cmdmanager_response = fake_set_cmdmanager_response
 
         command = 'activate'
         self.daemon.conn_mng.do_activate = fake_activation_into_connection_manager
@@ -1521,7 +1472,7 @@ class TestDaemonCmdManagerConnection(unittest.TestCase):
         old_activate_state = self.daemon.cfg['activate']
 
         # Call _activation_check with successful response from server
-        self.daemon._activation_check(self.socket, command, data)
+        self.daemon._activation_check(command, data)
 
         self.assertEqual(self.daemon.cfg['user'], USR, old_user)
         self.assertEqual(self.daemon.password, PW, old_pass)
@@ -1540,7 +1491,7 @@ class TestDaemonCmdManagerConnection(unittest.TestCase):
             return {'successful': False}
 
         #Mocking the communication with cmdmanager
-        self.daemon._set_cmdmanager_response = fake_set_cmdmanager_response
+        utils.set_cmdmanager_response = fake_set_cmdmanager_response
 
         command = 'activate'
         self.daemon.conn_mng.do_activate = fake_activation_into_connection_manager
@@ -1551,7 +1502,7 @@ class TestDaemonCmdManagerConnection(unittest.TestCase):
         old_activate_state = self.daemon.cfg['activate']
 
         # Call _activation_check with failed response from server
-        self.daemon._activation_check(self.socket, command, data)
+        self.daemon._activation_check(command, data)
 
         self.assertEqual(self.daemon.cfg['user'], old_user, USR)
         self.assertEqual(self.daemon.password, old_pass, PW)
@@ -1569,7 +1520,7 @@ class TestDaemonCmdManagerConnection(unittest.TestCase):
             return {'successful': True}
 
         #Mocking the communication with cmdmanager
-        self.daemon._set_cmdmanager_response = fake_set_cmdmanager_response
+        utils.set_cmdmanager_response = fake_set_cmdmanager_response
 
         command = 'login'
         self.daemon.conn_mng.do_login = fake_login_into_connection_manager
@@ -1580,7 +1531,7 @@ class TestDaemonCmdManagerConnection(unittest.TestCase):
         old_activate_state = self.daemon.cfg['activate']
 
         # Call _activation_check with successful response from server
-        self.daemon._activation_check(self.socket, command, data)
+        self.daemon._activation_check(command, data)
 
         self.assertEquals(self.daemon.cfg['user'], USR, old_user)
         self.assertEquals(self.daemon.password, PW, old_pass)
@@ -1599,7 +1550,7 @@ class TestDaemonCmdManagerConnection(unittest.TestCase):
             return {'successful': False}
 
         #Mocking the communication with cmdmanager
-        self.daemon._set_cmdmanager_response = fake_set_cmdmanager_response
+        utils.set_cmdmanager_response = fake_set_cmdmanager_response
 
         command = 'login'
         self.daemon.conn_mng.do_login = fake_login_into_connection_manager
@@ -1610,7 +1561,7 @@ class TestDaemonCmdManagerConnection(unittest.TestCase):
         old_activate_state = self.daemon.cfg['activate']
 
         # Call _activation_check with failed response from server
-        self.daemon._activation_check(self.socket, command, data)
+        self.daemon._activation_check(command, data)
 
         self.assertEqual(self.daemon.cfg['user'], old_user)
         self.assertEqual(self.daemon.password, old_pass)
