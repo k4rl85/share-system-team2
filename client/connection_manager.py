@@ -37,6 +37,8 @@ class ConnectionManager(object):
                           requests.exceptions.MissingSchema)
 
     def __init__(self, cfg, sharing_dir):
+
+        self.sharing_dir = sharing_dir
         self.load_cfg(cfg)
 
     def load_cfg(self, cfg):
@@ -221,7 +223,7 @@ class ConnectionManager(object):
             return {'content': 'Failed to download file from server.\n'
                                'Path: {}\nError: {}'.format(data['filepath'], e),
                     'successful': False}
-        filepath = os.path.join(self.cfg['sharing_path'], data['filepath'])
+        filepath = os.path.join(self.sharing_dir, data['filepath'])
         dirpath, filename = os.path.split(filepath)
         # Create all missing directories
         if not os.path.isdir(dirpath):
@@ -234,7 +236,7 @@ class ConnectionManager(object):
             return {'content': 'Error! Download of file already existent! Operation Aborted.', 'successful': False}
 
     def do_upload(self, data):
-        filepath = os.path.join(self.cfg['sharing_path'], data['filepath'])
+        filepath = os.path.join(self.sharing_dir, data['filepath'])
         url = ''.join([self.files_url, data['filepath']])
         encoded_url = urllib.quote(url, ConnectionManager.ENCODER_FILTER)
         module_logger.debug('{}: URL: {} - DATA: {} '.format('do_upload', url, data))
@@ -249,7 +251,7 @@ class ConnectionManager(object):
                     'successful': False}
 
     def do_modify(self, data):
-        filepath = os.path.join(self.cfg['sharing_path'], data['filepath'])
+        filepath = os.path.join(self.sharing_dir, data['filepath'])
         url = ''.join([self.files_url, data['filepath']])
         encoded_url = urllib.quote(url, ConnectionManager.ENCODER_FILTER)
         module_logger.debug('{}: URL: {} - DATA: {} '.format('do_modify', url, data))

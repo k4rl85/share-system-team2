@@ -1,33 +1,21 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-import json
 import socket
-import struct
 import select
 import os
-import hashlib
 import logging
 import datetime
 import argparse
 from sys import exit as exit
-from collections import OrderedDict
 from shutil import copy2, move
 
-# we import PollingObserver instead of Observer because the deleted event
-# is not capturing https://github.com/gorakhargosh/watchdog/issues/46
-from watchdog.observers.polling import PollingObserver as Observer
 from watchdog.events import FileSystemEventHandler
-import keyring
 
 from connection_manager import ConnectionManager
+import utils
 
 
-# The path for configuration directory, daemon configuration files and sharing folder
-DEFAULT_CONFIG_DIR = os.path.join(os.environ['HOME'], '.PyBox')
-DEFAULT_CONFIG_FILEPATH = os.path.join(DEFAULT_CONFIG_DIR, 'daemon_config')
-DEFAULT_LOCAL_DIR_STATE_FILEPATH = os.path.join(DEFAULT_CONFIG_DIR, 'local_dir_state')
-DEFAULT_SHARING_FOLDER_FILEPATH = os.path.join(os.environ['HOME'], 'sharing_folder')
 
 # Logging configuration
 # =====================
@@ -52,191 +40,43 @@ console_formatter = logging.Formatter('%(asctime)s  %(levelname)-8s  %(message)s
 console_handler.setFormatter(console_formatter)
 
 
-class SkipObserver(Observer):
-    def __init__(self, *args):
-        Observer.__init__(self, *args)
-        self._skip_list = []
-
-    def skip(self, path):
-        self._skip_list.append(path)
-        logger.debug('Path "{}" added to skip list!!!'.format(path))
-
-    def dispatch_events(self, event_queue, timeout):
-        event, watch = event_queue.get(block=True, timeout=timeout)
-        skip = False
-        try:
-            event.dest_path
-        except AttributeError:
-            pass
-        else:
-            if event.dest_path in self._skip_list:
-                self._skip_list.remove(event.dest_path)
-                skip = True
-        try:
-            event.src_path
-        except AttributeError:
-            pass
-        else:
-            if event.src_path in self._skip_list:
-                self._skip_list.remove(event.src_path)
-                skip = True
-
-        if not skip:
-            self._dispatch_event(event, watch)
-
-        event_queue.task_done()
+def create_log_file_handler():
+    """Creates file handler which logs even info messages"""
+    if not os.path.isdir('log'):
+        os.mkdir('log')
+    file_handler = logging.FileHandler(LOG_FILENAME)
+    file_handler.setLevel(logging.INFO)
+    file_formatter = logging.Formatter('%(asctime)s %(name)-15s  %(levelname)-8s  %(message)s', '%Y-%m-%d %H:%M:%S')
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
+    return file_handler
 
 
-def is_directory(method):
-    def wrapper(self, e):
-        if e.is_directory:
-            return
-        return method(self, e)
-    return wrapper
-
-
-class Daemon(FileSystemEventHandler):
-
-    # Default configuration for Daemon, loaded if fail to load the config file from CONFIG_DIR
-    DEF_CONF = OrderedDict()
-    DEF_CONF['local_dir_state_path'] = DEFAULT_LOCAL_DIR_STATE_FILEPATH
-    DEF_CONF['sharing_path'] = DEFAULT_SHARING_FOLDER_FILEPATH
-    DEF_CONF['cmd_address'] = 'localhost'
-    DEF_CONF['cmd_port'] = 50001
-    DEF_CONF['api_suffix'] = '/API/V1/'
-    DEF_CONF['server_address'] = 'http://localhost:5000'
-
-    # Calculate int size in the machine architecture
-    INT_SIZE = struct.calcsize('!i')
+class Daemon(FileSystemEventHandler, utils.DaemonUtils):
 
     # Allowed operation before user is activated
     ALLOWED_OPERATION = {'register', 'activate', 'login'}
 
     def __init__(self, cfg_path, sharing_path):
-
         FileSystemEventHandler.__init__(self)
+        super(Daemon, self).__init__(cfg_path, sharing_path)
         # Initialize variable the Daemon.start() will use
         self.daemon_state = 'down'  # TODO implement the daemon state (disconnected, connected, syncronizing, ready...)
         self.running = 0
         self.client_snapshot = {}  # EXAMPLE {'<filepath1>: ['<timestamp>', '<md5>', '<filepath2>: ...}
         self.shared_snapshot = {}
-        self.local_dir_state = {}  # EXAMPLE {'last_timestamp': '<timestamp>', 'global_md5': '<md5>'}
         self.listener_socket = None
         self.observer = None
-        # Init configuration for daemon
-        self.build_directory(sharing_path)
-        self.cfg_filepath = cfg_path
-        self.cfg = self.load_configuration(cfg_path, sharing_path)
+
         self.password = self._load_pass()
 
-        self.conn_mng = ConnectionManager(self.cfg)
+        self.conn_mng = ConnectionManager(self.cfg, self.sharing_dir)
 
         self.INTERNAL_COMMANDS = {
             'addshare': self._add_share,
             'removeshare': self._remove_share,
             'removeshareduser': self._remove_shared_user,
         }
-
-    @staticmethod
-    def build_directory(dir_path):
-        """
-        Check that the given folder exists otherwise create it.
-        """
-        if not os.path.isdir(dir_path):
-            try:
-                os.makedirs(dir_path)
-                logger.info('Folder created in path:\n{}'.format(dir_path))
-            except Exception:
-                logger.error('Impossible to create folder in path:\n{}'
-                             .format(dir_path))
-                raise
-
-    def load_configuration(self, cfg_path, sharing_path):
-        """
-        Loads config, in case of customized config file try to read it,
-        if config file is corrupted restore it and load default configuration.
-
-        :param cfg_path: Path of config
-        :return: dictionary containing configuration
-        """
-        loaded_config = OrderedDict()
-        try:
-            with open(cfg_path, 'r') as fo:
-                # To maintain the order i will extract one by one record
-                for k, v in json.load(fo).iteritems():
-                    loaded_config[k] = v
-        except (ValueError, OSError, IOError):
-            logger.warning('\nImpossible to load configuration from filepath:\n{0}\n'
-                           'Config file overwrited and loaded with default configuration!'.format(cfg_path))
-            return self.create_cfg(cfg_path, sharing_path)
-
-        # Check that all the key in DEF_CONF are in loaded_config
-        for k in Daemon.DEF_CONF:
-            if k not in loaded_config:
-                logger.warning('Warning "{0}" corrupted!\n'
-                                'Config file overwrited and loaded with default configuration!'
-                               .format(cfg_path))
-                return self.create_cfg(cfg_path, sharing_path)
-
-        # Config is valid
-        return loaded_config
-
-    def create_cfg(self, cfg_path, sharing_path):
-        """
-        Creates the cfg file for client_daemon with the given cfg filepath and sharing folder path
-        and returns the result config.
-
-        :param cfg_path: Path of config
-        :param sharing_path: Indicate the path of observed directory
-        """
-
-        cfg_dir = os.path.dirname(cfg_path)
-        self.build_directory(cfg_dir)
-        new_cfg = self.DEF_CONF
-        new_cfg['sharing_path'] = sharing_path
-        new_cfg['local_dir_state_path'] = os.path.join(cfg_dir, 'local_dir_state')
-
-        with open(cfg_path, 'w') as daemon_config:
-            json.dump(new_cfg, daemon_config, skipkeys=True, ensure_ascii=True, indent=4)
-        return new_cfg
-
-    def update_cfg(self):
-        """
-        Update cfg with new state in self.cfg
-        """
-        with open(self.cfg_filepath, 'w') as daemon_config:
-            json.dump(self.cfg, daemon_config, skipkeys=True, ensure_ascii=True, indent=4)
-
-    def _save_pass(self, password):
-        """
-        Save password in keyring
-        """
-        keyring.set_password('PyBox', self.cfg['user'], password)
-
-    def _load_pass(self):
-        """
-        Load from keyring the password
-        :return: the account password
-        """
-        return keyring.get_password('PyBox', self.cfg.get('user', ''))
-
-    def build_client_snapshot(self):
-        """
-        Build a snapshot of the sharing folder with the following structure
-
-        self.client_snapshot
-        {
-            "<file_path>":('<timestamp>', '<md5>')
-        }
-        """
-        self.client_snapshot = {}
-        for dirpath, dirs, files in os.walk(self.cfg['sharing_path']):
-            for filename in files:
-                filepath = os.path.join(dirpath, filename)
-                rel_filepath = self.relativize_path(filepath)
-
-                if not self._is_shared_file(rel_filepath):
-                    self.client_snapshot[rel_filepath] = ['', self.hash_file(filepath)]
 
     def build_shared_snapshot(self):
         """
@@ -257,7 +97,7 @@ class Daemon(FileSystemEventHandler):
         # check the consistency of client snapshot retrieved by the server with the real files on clients
         file_md5 = None
         for filepath in self.shared_snapshot.keys():
-            file_md5 = self.hash_file(self.absolutize_path(filepath))
+            file_md5 = utils.hash_file(self.absolutize_path(filepath))
             if not file_md5 or file_md5 != self.shared_snapshot[filepath][1]:
                 # force the re-download at next synchronization
                 self.shared_snapshot.pop(filepath)
@@ -269,28 +109,6 @@ class Daemon(FileSystemEventHandler):
         #
         # P.S. It can't delete them because some files could be not shared files, so it's safe don't force
         # the deletion of them
-
-    def _is_directory_modified(self):
-        """
-        The function check if the shared folder has been modified.
-        It recalculate the md5 from client_snapshot and compares it with the global md5 stored in local_dir_state
-        :return: True or False
-        """
-
-        if self.md5_of_client_snapshot() != self.local_dir_state['global_md5']:
-            return True
-        else:
-            return False
-
-    def search_md5(self, searched_md5):
-        """
-        Receive as parameter the md5 of a file and return the first knowed path with the same md5
-        """
-        for path, tupla in self.client_snapshot.iteritems():
-            if searched_md5 in tupla[1]:
-                return path
-        else:
-            return None
 
     def _make_copy_on_client(self, src, dst):
         """
@@ -315,7 +133,7 @@ class Daemon(FileSystemEventHandler):
         except IOError:
             return False
         self.client_snapshot[dst] = self.client_snapshot[src]
-        logging.info('Copied file on client during SYNC.\n'
+        logger.info('Copied file on client during SYNC.\n'
                      'Source filepath: {}\nDestination filepath: {}'.format(abs_src, abs_dst))
         return True
 
@@ -601,7 +419,7 @@ class Daemon(FileSystemEventHandler):
 
             elif command == 'modify' or command == 'upload':
                 abs_path = self.absolutize_path(path)
-                new_md5 = self.hash_file(abs_path)
+                new_md5 = utils.hash_file(abs_path)
                 response = self.conn_mng.dispatch_request(command, {'filepath': path, 'md5': new_md5})
                 if response['successful']:
                     last_operation_timestamp = response['content']['server_timestamp']
@@ -617,7 +435,7 @@ class Daemon(FileSystemEventHandler):
                 response = self.conn_mng.dispatch_request(command, {'filepath': path})
                 if response['successful']:
                     logger.info('Downloaded file from server during SYNC.\nDownloaded filepath: {}'.format(abs_path))
-                    if self._is_shared_file(path):
+                    if utils.is_shared_file(path):
                         self.shared_snapshot[path] = shared_files[path]
                     else:
                         self.client_snapshot[path] = server_snapshot[path]
@@ -626,36 +444,7 @@ class Daemon(FileSystemEventHandler):
 
         self.update_local_dir_state(last_operation_timestamp)
 
-    def _is_shared_file(self, path):
-        """
-        Check if the given path is a shared file.(Check if is located in 'shared' folder)
-        :param path:
-        :return: True, False
-        """
-
-        if path.split('/')[0] == 'shared':
-            return True
-        return False
-
-    def relativize_path(self, abs_path):
-        """
-        This function relativize the path watched by daemon:
-        for example: /home/user/watched/subfolder/ will be subfolder/
-        """
-        if abs_path.startswith(self.cfg['sharing_path']):
-            relative_path = abs_path[len(self.cfg['sharing_path']) + 1:]
-            return relative_path
-        else:
-            raise Exception
-
-    def absolutize_path(self, rel_path):
-        """
-        This function absolutize a path that i have relativize before:
-        for example: subfolder/ will be /home/user/watched/subfolder/
-        """
-        return os.path.join(self.cfg['sharing_path'], rel_path)
-
-    @is_directory
+    @utils.is_directory
     def on_created(self, e):
         """
         Manage the create event observed from watchdog.
@@ -681,7 +470,7 @@ class Daemon(FileSystemEventHandler):
                                 'md5': new_md5}
             return data
 
-        new_md5 = self.hash_file(e.src_path)
+        new_md5 = utils.hash_file(e.src_path)
         rel_new_path = self.relativize_path(e.src_path)
         founded_path = self.search_md5(new_md5)
         # with this check i found the copy events
@@ -703,7 +492,7 @@ class Daemon(FileSystemEventHandler):
 
         # Send data to connection manager dispatcher and check return value.
         # If all go right update client_snapshot and local_dir_state
-        if self._is_shared_file(rel_new_path):
+        if utils.is_shared_file(rel_new_path):
             logger.warning('You are writing file in path: {}\n'
                            'This is a read-only folder, so it will not be synchronized with server'
                            .format(rel_new_path))
@@ -717,7 +506,7 @@ class Daemon(FileSystemEventHandler):
             else:
                 self.stop(1, response['content'])
 
-    @is_directory
+    @utils.is_directory
     def on_moved(self, e):
         """
         Manage the move event observed from watchdog.
@@ -732,8 +521,8 @@ class Daemon(FileSystemEventHandler):
         rel_src_path = self.relativize_path(e.src_path)
         rel_dest_path = self.relativize_path(e.dest_path)
 
-        source_shared = self._is_shared_file(rel_src_path)
-        dest_shared = self._is_shared_file(rel_dest_path)
+        source_shared = utils.is_shared_file(rel_src_path)
+        dest_shared = utils.is_shared_file(rel_dest_path)
 
         # this check that move event isn't modify event.
         # Normally this never happen but sometimes watchdog fail to understand what has happened on file.
@@ -746,7 +535,7 @@ class Daemon(FileSystemEventHandler):
 
         if source_shared and not dest_shared:  # file moved from shared path to not shared path
             # upload the file
-            new_md5 = self.hash_file(e.dest_path)
+            new_md5 = utils.hash_file(e.dest_path)
             data = {
                 'filepath': rel_dest_path,
                 'md5': new_md5
@@ -824,7 +613,7 @@ class Daemon(FileSystemEventHandler):
             else:
                 self.stop(1, response['content'])
 
-    @is_directory
+    @utils.is_directory
     def on_modified(self, e):
         """
         Manage the modify event observed from watchdog.
@@ -834,13 +623,13 @@ class Daemon(FileSystemEventHandler):
         :param e: event object with information about what has happened
         """
         logger.info('Modify event on file: {}'.format(e.src_path))
-        new_md5 = self.hash_file(e.src_path)
+        new_md5 = utils.hash_file(e.src_path)
         rel_path = self.relativize_path(e.src_path)
         data = {
             'filepath': rel_path,
             'md5': new_md5
         }
-        if self._is_shared_file(rel_path):
+        if utils.is_shared_file(rel_path):
             # if it has modified a file tracked by shared snapshot, then force the re-download of it
             try:
                 self.shared_snapshot.pop(rel_path)
@@ -858,7 +647,7 @@ class Daemon(FileSystemEventHandler):
             else:
                 self.stop(1, response['content'])
 
-    @is_directory
+    @utils.is_directory
     def on_deleted(self, e):
         """
         Manage the delete event observed from watchdog.
@@ -869,7 +658,7 @@ class Daemon(FileSystemEventHandler):
         """
         logger.info('Delete event on file: {}'.format(e.src_path))
         rel_path = self.relativize_path(e.src_path)
-        if self._is_shared_file(rel_path):
+        if utils.is_shared_file(rel_path):
             # if it has modified a file tracked by shared snapshot, then force the re-download of it
             try:
                 self.shared_snapshot.pop(rel_path)
@@ -890,38 +679,6 @@ class Daemon(FileSystemEventHandler):
             else:
                 self.stop(1, response['content'])
 
-    def _get_cmdmanager_request(self, socket):
-        """
-        Communicate with cmd_manager and get the request
-        Returns the request decoded by json format or None if cmd_manager send connection closure
-        """
-        packet_size = socket.recv(Daemon.INT_SIZE)
-        if len(packet_size) == Daemon.INT_SIZE:
-
-            packet_size = int(struct.unpack('!i', packet_size)[0])
-            packet = ''
-            remaining_size = packet_size
-
-            while len(packet) < packet_size:
-                packet_buffer = socket.recv(remaining_size)
-                remaining_size -= len(packet_buffer)
-                packet = ''.join([packet, packet_buffer])
-
-            req = json.loads(packet)
-            return req
-        else:
-            return None
-
-    def _set_cmdmanager_response(self, socket, message):
-        """
-        Makes cmd_manager response encoding it in json format and send it to cmd_manager
-        """
-        response = {'message': message}
-        response_packet = json.dumps(response)
-        socket.sendall(struct.pack('!i', len(response_packet)))
-        socket.sendall(response_packet)
-        return response_packet
-
     def _initialize_observing(self):
         """
         Intial operation for observing.
@@ -938,10 +695,10 @@ class Daemon(FileSystemEventHandler):
         """
         Create an instance of the watchdog Observer thread class.
         """
-        self.observer = SkipObserver()
-        self.observer.schedule(self, path=self.cfg['sharing_path'], recursive=True)
+        self.observer = utils.SkipObserver()
+        self.observer.schedule(self, path=self.sharing_dir, recursive=True)
 
-    def _activation_check(self, s, cmd, data):
+    def _activation_check(self, cmd, data):
         """
         This method allow only registration and activation of user until this will be accomplished.
         In case of bad cmd this will be refused otherwise if the server response are successful
@@ -1007,7 +764,6 @@ class Daemon(FileSystemEventHandler):
         try:
             while self.running:
                 r_ready, w_ready, e_ready = select.select(r_list, [], [], TIMEOUT_LISTENER_SOCK)
-
                 for s in r_ready:
 
                     if s == self.listener_socket:
@@ -1016,7 +772,7 @@ class Daemon(FileSystemEventHandler):
                         r_list.append(client_socket)
                     else:
                         # handle all other sockets
-                        req = self._get_cmdmanager_request(s)
+                        req = utils.get_cmdmanager_request(s)
 
                         if req:
                             for cmd, data in req.items():
@@ -1024,17 +780,18 @@ class Daemon(FileSystemEventHandler):
                                 # now used an expedient (raise KeyboardInterrupt) to make it runnable
                                 if cmd == 'shutdown':
                                     response = {'content': 'Daemon is shutting down', 'successful': True}
-                                    self._set_cmdmanager_response(s, response)
+                                    utils.set_cmdmanager_response(s, response)
                                     raise KeyboardInterrupt
 
                                 if not self.cfg.get('activate'):
-                                    response = self._activation_check(s, cmd, data)
+                                    response = self._activation_check(cmd, data)
+                                # this elif avoid login of user with already logged daemon
                                 elif cmd == 'login':
                                     response = {'content': 'Warning! There is a user already authenticated on this '
                                                            'computer. Impossible to login account',
                                                 'successful': False}
-
-                                else:  # client is already activated
+                                # client is already activated
+                                else:
                                     try:
                                         response = self.INTERNAL_COMMANDS[cmd](data)
                                     except KeyError:
@@ -1046,7 +803,7 @@ class Daemon(FileSystemEventHandler):
                                         # to send like response
                                         # TODO it's advisable to make attention to this assertion or refact the architecture
 
-                                self._set_cmdmanager_response(s, response)
+                                utils.set_cmdmanager_response(s, response)
                         else:  # it receives the FIN packet that close the connection
                             s.close()
                             r_list.remove(s)
@@ -1069,7 +826,7 @@ class Daemon(FileSystemEventHandler):
 
     def _validate_path(self, path):
 
-        if os.path.exists(''.join([self.cfg['sharing_path'], os.sep, path])):
+        if os.path.exists(''.join([self.sharing_dir, os.sep, path])):
             return True
         return False
 
@@ -1116,95 +873,29 @@ class Daemon(FileSystemEventHandler):
             logger.error(exit_message)
         exit(exit_status)
 
-    def update_local_dir_state(self, last_timestamp):
-        """
-        Update the local_dir_state with last_timestamp operation and save it on disk
-        """
 
-        self.local_dir_state['last_timestamp'] = last_timestamp
-        self.local_dir_state['global_md5'] = self.md5_of_client_snapshot()
-        self.save_local_dir_state()
-
-    def save_local_dir_state(self):
-        """
-        Save local_dir_state on disk
-        """
-        json.dump(self.local_dir_state, open(self.cfg['local_dir_state_path'], 'w'), indent=4)
-
-    def load_local_dir_state(self):
-        """
-        Load local dir state on self.local_dir_state variable
-        if file doesn't exists it will be created without timestamp
-        """
-
-        def _rebuild_local_dir_state():
-            self.local_dir_state = {'last_timestamp': 0, 'global_md5': self.md5_of_client_snapshot()}
-            json.dump(self.local_dir_state, open(self.cfg['local_dir_state_path'], 'w'), indent=4)
-
-        if os.path.isfile(self.cfg['local_dir_state_path']):
-            self.local_dir_state = json.load(open(self.cfg['local_dir_state_path'], 'r'))
-            logger.debug('Loaded local_dir_state')
-        else:
-            logger.debug('local_dir_state not found. Initialize new local_dir_state')
-            _rebuild_local_dir_state()
-
-    def md5_of_client_snapshot(self):
-        """
-        Calculate the md5 of the entire directory snapshot,
-        with the md5 in client_snapshot and the md5 of full filepath string.
-        :return is the md5 hash of the directory
-        """
-
-        md5hash = hashlib.md5()
-
-        for path, time_md5 in sorted(self.client_snapshot.iteritems()):
-            # extract md5 from tuple. we don't need hexdigest it's already md5
-            md5hash.update(time_md5[1])
-            md5hash.update(path)
-
-        return md5hash.hexdigest()
-
-    def hash_file(self, file_path, chunk_size=1024):
-        """
-        :accept an absolute file path
-        :return the md5 hash of received file
-        """
-
-        md5hash = hashlib.md5()
-        try:
-            f1 = open(file_path, 'rb')
-            while True:
-                # Read file in as little chunks
-                buf = f1.read(chunk_size)
-                if not buf:
-                    break
-                md5hash.update(buf)
-            f1.close()
-            return md5hash.hexdigest()
-        except (OSError, IOError) as e:
-            self.stop(1, 'ERROR during hash of file: {}\nError happened: '.format(file_path, e))
-
-
-def create_log_file_handler():
-    # create file handler which logs even info messages
-    if not os.path.isdir('log'):
-        os.mkdir('log')
-    file_handler = logging.FileHandler(LOG_FILENAME)
-    file_handler.setLevel(logging.INFO)
-    file_formatter = logging.Formatter('%(asctime)s %(name)-15s  %(levelname)-8s  %(message)s', '%Y-%m-%d %H:%M:%S')
-    file_handler.setFormatter(file_formatter)
-    logger.addHandler(file_handler)
-    return file_handler
+def is_valid_dir(parser, string):
+    if os.path.isdir(string) or string in (utils.DEFAULT_CONFIG_FOLDER,
+                                           utils.DEFAULT_SHARING_FOLDER):
+        return string
+    else:
+        parser.error('The path "%s" does not be a valid directory!' % string)
 
 
 def main():
     file_handler = create_log_file_handler()
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-cfg', help='the configuration file filepath',
-                        default=DEFAULT_CONFIG_FILEPATH)
-    parser.add_argument('-sh', help='the sharing path that we will observing',
-                        default=DEFAULT_SHARING_FOLDER_FILEPATH, dest='custom_sharing_path')
+    parser.add_argument('-cfg', help='the configuration folder path.\n'
+                                     'NOTE: You have to create it before use!',
+                        type=lambda string: is_valid_dir(parser, string),
+                        default=utils.DEFAULT_CONFIG_FOLDER,
+                        dest='config_folder_path')
+    parser.add_argument('-sh', help='the sharing folder path that we will observed.\n'
+                                    'NOTE: You have to create it before use!',
+                        type=lambda string: is_valid_dir(parser, string),
+                        default=utils.DEFAULT_SHARING_FOLDER,
+                        dest='sharing_folder_path')
     parser.add_argument('--debug', default=False, action='store_true',
                         help='set console verbosity level to DEBUG (4) '
                              '[default: %(default)s]')
@@ -1221,6 +912,11 @@ def main():
                         help='set host address to run the server. [default: %(default)s].')
 
     args = parser.parse_args()
+
+    if args.config_folder_path == args.sharing_folder_path:
+        parser.error('Sharing folder and config folder must be different!')
+    elif args.sharing_folder_path in args.config_folder_path:
+        parser.error('Config folder must be outside Sharing folder!')
     levels = [logging.CRITICAL, logging.ERROR, logging.WARNING, logging.INFO, logging.DEBUG]
     if args.debug:
         # If set to True, win against verbosity and verbose parameter
@@ -1240,7 +936,8 @@ def main():
     logger.info('Console logging level: {}'.format(console_handler.level))
     logger.info('File logging level: {}'.format(file_handler.level))
 
-    daemon = Daemon(args.cfg, args.custom_sharing_path)
+    # Start daemon
+    daemon = Daemon(args.config_folder_path, args.sharing_folder_path)
     daemon.start()
 
 
