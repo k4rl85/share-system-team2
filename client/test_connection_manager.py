@@ -44,16 +44,16 @@ TEST_CFG = {
     'activate': True
 }
 
+# Test-user account details
+USR, PW = 'client_user@mail.com', 'Mail_85'
+
 
 def create_environment():
-    if not os.path.exists(TEST_DIR):
+    if not os.path.exists(CONFIG_DIR):
         os.makedirs(CONFIG_DIR)
 
     with open(CONFIG_FILEPATH, 'w') as f:
             json.dump(TEST_CFG, f, skipkeys=True, ensure_ascii=True, indent=4)
-
-# Test-user account details
-USR, PW = 'client_user@mail.com', 'Mail_85'
 
 
 def make_fake_dir():
