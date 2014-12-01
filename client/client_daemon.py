@@ -886,30 +886,30 @@ def main():
     file_handler = create_log_file_handler()
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-cfg', help='the configuration folder path.\n'
+    parser.add_argument('-cfg', help='The configuration folder path.\n'
                                      'NOTE: You have to create it before use!',
                         type=lambda string: is_valid_dir(parser, string),
                         default=utils.DEFAULT_CONFIG_FOLDER,
                         dest='config_folder_path')
-    parser.add_argument('-sh', help='the sharing folder path that we will observed.\n'
+    parser.add_argument('-sh', help='The sharing folder path that will be observed.\n'
                                     'NOTE: You have to create it before use!',
                         type=lambda string: is_valid_dir(parser, string),
                         default=utils.DEFAULT_SHARING_FOLDER,
                         dest='sharing_folder_path')
     parser.add_argument('--debug', default=False, action='store_true',
-                        help='set console verbosity level to DEBUG (4) '
+                        help='Set console verbosity level to DEBUG (4) '
                              '[default: %(default)s]')
     parser.add_argument('--verbose', default=False, action='store_true',
-                        help='set console verbosity level to INFO (3) [default: %(default)s].'
+                        help='Set console verbosity level to INFO (3) [default: %(default)s].'
                              'Ignored if --debug option is set.')
     parser.add_argument('-v', '--verbosity', type=int, choices=range(5), nargs='?',
-                        help='set console verbosity: 0=CRITICAL, 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG. '
+                        help='Set console verbosity: 0=CRITICAL, 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG. '
                              '[default: %(default)s]. Ignored if --verbose or --debug option is set.')
     parser.add_argument('-fv', '--file_verbosity', type=int, choices=range(5), nargs='?',
-                        help='set file verbosity: 0=CRITICAL, 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG. '
+                        help='Set file verbosity: 0=CRITICAL, 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG. '
                              '[default: %(default)s].')
     parser.add_argument('-H', '--host', default='0.0.0.0',
-                        help='set host address to run the server. [default: %(default)s].')
+                        help='Set host address to run the server. [default: %(default)s].')
 
     args = parser.parse_args()
 
